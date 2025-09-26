@@ -386,7 +386,7 @@ class MultiPersonPoseTracker {
     const loader = new GLTFLoader();
 
     loader.load(
-      "./Balloon.glb", // Path to your balloon model
+      "./balloon.glb", // Path to your balloon model
       (gltf) => {
         // Get the balloon mesh from the loaded model
         this.balloonMesh = gltf.scene;
