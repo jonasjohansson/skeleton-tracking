@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1" />
+    <title>Pose → Mixamo Retarget (Webcam + Three.js + MediaPipe)</title>
+    <!-- Import map expects local Three.js build and MediaPipe Tasks shim in project root -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./build/three.module.js",
+          "three/addons/": "./examples/jsm/",
+          "@mediapipe/tasks-vision": "./tasks-vision@latest.js"
+        }
+      }
+    </script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0a0a0a;
+        color: #ddd;
+        font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      }
+      #ui {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        z-index: 10;
+      }
+      #ui > div {
+        background: rgba(20, 20, 20, 0.8);
+        padding: 8px 10px;
+        border: 1px solid #222;
+        border-radius: 8px;
+      }
+      label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      video {
+        position: fixed;
+        right: 8px;
+        bottom: 8px;
+        width: 240px;
+        border-radius: 8px;
+        border: 1px solid #222;
+        opacity: 0.6;
+      }
+      a {
+        color: #7dd3fc;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui">
+      <div>
+        <div><strong>Pose → Mixamo (demo)</strong></div>
+        <div>Loads <code>Soldier.glb</code> from threejs.org. Uses webcam. HTTPS required.</div>
+      </div>
+      <div>
+        <label
+          >People
+          <input
+            id="numPoses"
+            type="number"
+            min="1"
+            max="5"
+            value="1"
+            style="width: 4em" />
+        </label>
+        <label
+          >Smoothing α
+          <input
+            id="smooth"
+            type="range"
+            min="0"
+            max="0.9"
+            step="0.05"
+            value="0.5" />
+        </label>
+        <label
+          ><input
+            id="showVideo"
+            type="checkbox"
+            checked />
+          Show webcam</label
+        >
+      </div>
+      <div>
+        <span>Keys: [V]ideo, [R]ecenter</span>
+      </div>
+    </div>
+
+    <video
+      id="webcam"
+      autoplay
+      playsinline
+      muted></video>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+      import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+
+      // ---------- Three.js setup ----------
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      renderer.setSize(innerWidth, innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0a0a0a);
+
+      const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+      camera.position.set(0, 1.5, 3.5);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.target.set(0, 1.2, 0);
+      controls.update();
+
+      // Light rig
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x222233, 0.8);
+      scene.add(hemi);
+      const key = new THREE.DirectionalLight(0xffffff, 1.2);
+      key.position.set(3, 6, 5);
+      key.castShadow = true;
+      scene.add(key);
+
+      // Ground
+      const ground = new THREE.Mesh(
+        new THREE.CircleGeometry(5, 64),
+        new THREE.MeshStandardMaterial({ color: 0x181818, roughness: 0.9, metalness: 0.0 })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      // ---------- Load Mixamo GLTF ----------
+      const loader = new GLTFLoader();
+      let avatar,
+        skeleton,
+        bonesByName = {};
+
+      function indexBones(root) {
+        root.traverse((o) => {
+          if (o.isBone) bonesByName[o.name] = o;
+        });
+      }
+
+      function findFirst(names) {
+        for (const n of names) if (bonesByName[n]) return bonesByName[n];
+        return null;
+      }
+
+      // Store bind-pose data for simple directional retarget
+      const bind = { dirs: {}, quats: {}, children: {} };
+
+      function cacheBindDirection(bone) {
+        // pick first bone child if exists
+        let child = bone.children.find((c) => c.isBone);
+        bind.children[bone.name] = child ? child.name : null;
+        // world-space positions
+        bone.updateWorldMatrix(true, false);
+        if (child) child.updateWorldMatrix(true, false);
+        const bp = new THREE.Vector3().setFromMatrixPosition(bone.matrixWorld);
+        const cp = child ? new THREE.Vector3().setFromMatrixPosition(child.matrixWorld) : null;
+        if (cp) {
+          const dir = cp.clone().sub(bp).normalize();
+          bind.dirs[bone.name] = dir; // world dir in bind
+        }
+        bind.quats[bone.name] = bone.quaternion.clone();
+      }
+
+      async function loadAvatar() {
+        return new Promise((resolve, reject) => {
+          loader.load(
+            "https://threejs.org/examples/models/gltf/Soldier.glb",
+            (g) => {
+              avatar = g.scene;
+              avatar.traverse((o) => {
+                o.castShadow = true;
+                o.frustumCulled = false;
+              });
+              scene.add(avatar);
+              // center on hips height
+              const box = new THREE.Box3().setFromObject(avatar);
+              const size = new THREE.Vector3();
+              box.getSize(size);
+              const center = new THREE.Vector3();
+              box.getCenter(center);
+              avatar.position.y += -box.min.y; // put feet on ground
+
+              indexBones(avatar);
+              skeleton = new THREE.SkeletonHelper(avatar);
+              skeleton.visible = false; // toggle if needed
+              scene.add(skeleton);
+
+              // cache a subset of bones for retarget
+              const targetBoneNames = [
+                "Hips",
+                "Spine",
+                "Spine1",
+                "Spine2",
+                "Neck",
+                "Head",
+                "LeftUpLeg",
+                "LeftLeg",
+                "LeftFoot",
+                "RightUpLeg",
+                "RightLeg",
+                "RightFoot",
+                "LeftArm",
+                "LeftForeArm",
+                "LeftHand",
+                "RightArm",
+                "RightForeArm",
+                "RightHand",
+              ];
+              // Alternate naming fallbacks for Mixamo variants
+              const alt = {
+                Hips: ["Hips", "mixamorigHips"],
+                Spine: ["Spine", "mixamorigSpine"],
+                Spine1: ["Spine1", "mixamorigSpine1"],
+                Spine2: ["Spine2", "mixamorigSpine2", "Spine3"],
+                Neck: ["Neck", "mixamorigNeck"],
+                Head: ["Head", "mixamorigHead"],
+                LeftUpLeg: ["LeftUpLeg", "mixamorigLeftUpLeg"],
+                LeftLeg: ["LeftLeg", "mixamorigLeftLeg"],
+                LeftFoot: ["LeftFoot", "mixamorigLeftFoot"],
+                RightUpLeg: ["RightUpLeg", "mixamorigRightUpLeg"],
+                RightLeg: ["RightLeg", "mixamorigRightLeg"],
+                RightFoot: ["RightFoot", "mixamorigRightFoot"],
+                LeftArm: ["LeftArm", "mixamorigLeftArm"],
+                LeftForeArm: ["LeftForeArm", "mixamorigLeftForeArm"],
+                LeftHand: ["LeftHand", "mixamorigLeftHand"],
+                RightArm: ["RightArm", "mixamorigRightArm"],
+                RightForeArm: ["RightForeArm", "mixamorigRightForeArm"],
+                RightHand: ["RightHand", "mixamorigRightHand"],
+              };
+
+              // remap missing bones to first available alt
+              for (const key in alt) {
+                const b = findFirst(alt[key]);
+                if (b) bonesByName[key] = b;
+              }
+
+              // cache bind pose for selected bones
+              for (const key in bonesByName) {
+                if (targetBoneNames.includes(key)) cacheBindDirection(bonesByName[key]);
+              }
+
+              resolve();
+            },
+            undefined,
+            reject
+          );
+        });
+      }
+
+      // ---------- MediaPipe Pose ----------
+      const video = document.getElementById("webcam");
+      const showVideo = document.getElementById("showVideo");
+      showVideo.addEventListener("change", () => (video.style.display = showVideo.checked ? "block" : "none"));
+
+      const numPosesEl = document.getElementById("numPoses");
+      const smoothEl = document.getElementById("smooth");
+
+      let landmarker; // PoseLandmarker
+      let lastVideoTime = -1;
+      let smoothed = null;
+
+      function lerpLandmarks(prev, next, alpha) {
+        if (!prev) return next.map((p) => ({ ...p }));
+        const out = [];
+        for (let i = 0; i < next.length; i++) {
+          const a = prev[i],
+            b = next[i];
+          out[i] = { x: a.x + (b.x - a.x) * alpha, y: a.y + (b.y - a.y) * alpha, z: a.z + (b.z - a.z) * alpha };
+        }
+        return out;
+      }
+
+      async function initPose() {
+        const fileset = await FilesetResolver.forVisionTasks(
+          // Will fetch WASM assets from CDN under the hood
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
+        landmarker = await PoseLandmarker.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath: "./pose_landmarker_full.task",
+            delegate: "GPU",
+          },
+          runningMode: "VIDEO",
+          numPoses: 1,
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+      }
+
+      async function initWebcam() {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
+        video.srcObject = stream;
+        await video.play();
+        video.style.display = showVideo.checked ? "block" : "none";
+      }
+
+      // ---------- Retarget helpers ----------
+      const LM = {
+        NOSE: 0,
+        LEFT_SHOULDER: 11,
+        RIGHT_SHOULDER: 12,
+        LEFT_ELBOW: 13,
+        RIGHT_ELBOW: 14,
+        LEFT_WRIST: 15,
+        RIGHT_WRIST: 16,
+        LEFT_HIP: 23,
+        RIGHT_HIP: 24,
+        LEFT_KNEE: 25,
+        RIGHT_KNEE: 26,
+        LEFT_ANKLE: 27,
+        RIGHT_ANKLE: 28,
+      };
+
+      function v(lms, idx) {
+        const p = lms[idx];
+        return new THREE.Vector3(p.x, p.y, p.z);
+      }
+      function mid(a, b) {
+        return a.clone().add(b).multiplyScalar(0.5);
+      }
+
+      function direction(from, to) {
+        return to.clone().sub(from).normalize();
+      }
+
+      function rotationBetweenVectors(a, b) {
+        const v1 = a.clone().normalize();
+        const v2 = b.clone().normalize();
+        const axis = new THREE.Vector3().crossVectors(v1, v2);
+        const dot = THREE.MathUtils.clamp(v1.dot(v2), -1, 1);
+        const angle = Math.acos(dot);
+        const q = new THREE.Quaternion().setFromAxisAngle(axis.normalize(), angle || 0);
+        if (!isFinite(angle)) q.identity();
+        return q;
+      }
+
+      function applyBoneDirection(boneName, targetDir) {
+        const bone = bonesByName[boneName];
+        if (!bone || !bind.dirs[boneName]) return;
+        // Reference and target are both in world space directions
+        const ref = bind.dirs[boneName];
+        const qDelta = rotationBetweenVectors(ref, targetDir);
+        // Apply delta on top of bind quaternion, in world space approximation
+        bone.quaternion.copy(bind.quats[boneName]).premultiply(qDelta);
+      }
+
+      function solveFromLandmarks(lms) {
+        // Use MediaPipe world landmark system: roughly meters, origin near hips, +X right, +Y up, +Z back from camera
+        // Arms
+        const ls = v(lms, LM.LEFT_SHOULDER);
+        const le = v(lms, LM.LEFT_ELBOW);
+        const lw = v(lms, LM.LEFT_WRIST);
+        const rs = v(lms, LM.RIGHT_SHOULDER);
+        const re = v(lms, LM.RIGHT_ELBOW);
+        const rw = v(lms, LM.RIGHT_WRIST);
+        applyBoneDirection("LeftArm", direction(ls, le));
+        applyBoneDirection("LeftForeArm", direction(le, lw));
+        applyBoneDirection("RightArm", direction(rs, re));
+        applyBoneDirection("RightForeArm", direction(re, rw));
+
+        // Legs
+        const lh = v(lms, LM.LEFT_HIP);
+        const lk = v(lms, LM.LEFT_KNEE);
+        const la = v(lms, LM.LEFT_ANKLE);
+        const rh = v(lms, LM.RIGHT_HIP);
+        const rk = v(lms, LM.RIGHT_KNEE);
+        const ra = v(lms, LM.RIGHT_ANKLE);
+        applyBoneDirection("LeftUpLeg", direction(lh, lk));
+        applyBoneDirection("LeftLeg", direction(lk, la));
+        applyBoneDirection("RightUpLeg", direction(rh, rk));
+        applyBoneDirection("RightLeg", direction(rk, ra));
+
+        // Spine/Head approximate
+        const hips = mid(lh, rh);
+        const shoulders = mid(ls, rs);
+        const spineDir = direction(hips, shoulders);
+        applyBoneDirection("Spine", spineDir);
+        applyBoneDirection("Spine1", spineDir);
+        applyBoneDirection("Spine2", spineDir);
+        const nose = v(lms, LM.NOSE);
+        applyBoneDirection("Neck", direction(shoulders, nose));
+        applyBoneDirection("Head", direction(shoulders, nose));
+
+        // Root placement: move avatar hips near camera center for visibility
+        if (bonesByName["Hips"]) {
+          // Map MediaPipe world coords to scene with a simple scale and flip Y,Z to match Three coords
+          const scale = 1.2; // tweak avatar-to-person size
+          const pos = new THREE.Vector3(-hips.x * scale, hips.y * scale + 1.0, -hips.z * scale);
+          avatar.position.lerp(pos, 0.15);
+        }
+      }
+
+      // ---------- Main loop ----------
+      await loadAvatar();
+      await initPose();
+      await initWebcam();
+
+      function onResize() {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+      }
+      addEventListener("resize", onResize);
+
+      addEventListener("keydown", (e) => {
+        if (e.key.toLowerCase() === "v") showVideo.click();
+        if (e.key.toLowerCase() === "r") {
+          avatar.position.set(0, avatar.position.y, 0);
+        }
+      });
+
+      async function tick() {
+        requestAnimationFrame(tick);
+
+        // Debug info
+        console.log("Video readyState:", video.readyState, "Landmarker:", !!landmarker);
+
+        if (!landmarker || video.readyState < 2) {
+          renderer.render(scene, camera);
+          return;
+        }
+
+        const t = video.currentTime;
+        const wantPoses = Math.max(1, Math.min(5, parseInt(numPosesEl.value || "1", 10)));
+
+        // Process every frame, not just when video time changes
+        try {
+          landmarker.setOptions({ numPoses: wantPoses });
+          const res = landmarker.detectForVideo(video, performance.now());
+
+          console.log("Detection result:", res);
+
+          if (res && res.worldLandmarks && res.worldLandmarks.length) {
+            console.log("Found", res.worldLandmarks.length, "poses");
+            // Track the most central person (closest to frame center)
+            const idx = 0; // simple single-person for demo
+            const world = res.worldLandmarks[idx];
+            const alpha = parseFloat(smoothEl.value);
+            smoothed = lerpLandmarks(smoothed, world, alpha);
+            solveFromLandmarks(smoothed);
+          } else {
+            console.log("No poses detected");
+          }
+        } catch (error) {
+          console.error("Detection error:", error);
+        }
+
+        renderer.render(scene, camera);
+      }
+
+      tick();
+    </script>
+  </body>
+</html>

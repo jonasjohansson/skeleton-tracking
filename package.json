@@ -1,0 +1,20 @@
+{
+  "name": "skeleton-tracking",
+  "version": "1.0.0",
+  "description": "",
+  "main": "tasks-vision@latest.js",
+  "directories": {
+    "example": "examples"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@mediapipe/camera_utils": "^0.3.1675466862",
+    "@mediapipe/pose": "^0.5.1675469404"
+  }
+}

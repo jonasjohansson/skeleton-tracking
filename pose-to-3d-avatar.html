@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Pose-to-3D Avatar - BlazePose + Three.js WebGPU</title>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: Arial, sans-serif;
+        background: #000;
+        color: white;
+        overflow: hidden;
+      }
+
+      #info {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 1000;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 10px;
+        border-radius: 5px;
+      }
+
+      #info a {
+        color: #00ff00;
+        text-decoration: none;
+      }
+
+      #video-container {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 320px;
+        height: 240px;
+        border: 2px solid #00ff00;
+        border-radius: 8px;
+        overflow: hidden;
+        z-index: 1000;
+      }
+
+      #video {
+        width: 100%;
+        height: 100%;
+        background: #000;
+      }
+
+      #canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+
+      #controls {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        z-index: 1000;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 15px;
+        border-radius: 5px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .control-group {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .control-group label {
+        min-width: 120px;
+        font-size: 12px;
+      }
+
+      button {
+        padding: 8px 16px;
+        background: #00ff00;
+        color: #000;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+      }
+
+      button:hover {
+        background: #00cc00;
+      }
+
+      button:disabled {
+        background: #666;
+        cursor: not-allowed;
+      }
+
+      input[type="range"] {
+        width: 100px;
+      }
+
+      #status {
+        position: absolute;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1000;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 10px;
+        border-radius: 5px;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="info">
+      <a
+        href="https://threejs.org"
+        target="_blank"
+        rel="noopener"
+        >three.js</a
+      >
+      WebGPU - Real-time Pose-to-3D Avatar<br />
+      <a
+        href="https://mediapipe.dev/"
+        target="_blank"
+        rel="noopener"
+        >MediaPipe</a
+      >
+      BlazePose +
+      <a
+        href="https://readyplayer.me/"
+        target="_blank"
+        rel="noopener"
+        >ReadyPlayer.me</a
+      >
+    </div>
+
+    <div id="status">
+      <div>Status: <span id="status-text">Initializing...</span></div>
+      <div>FPS: <span id="fps">0</span></div>
+      <div>Pose Confidence: <span id="pose-confidence">0%</span></div>
+    </div>
+
+    <div id="video-container">
+      <video
+        id="video"
+        autoplay
+        muted
+        playsinline></video>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="controls">
+      <div class="control-group">
+        <button id="start-btn">Start Detection</button>
+        <button
+          id="stop-btn"
+          disabled>
+          Stop Detection
+        </button>
+      </div>
+
+      <div class="control-group">
+        <label for="smoothing">Pose Smoothing:</label>
+        <input
+          type="range"
+          id="smoothing"
+          min="0.1"
+          max="1.0"
+          step="0.1"
+          value="0.5" />
+        <span id="smoothing-value">0.5</span>
+      </div>
+
+      <div class="control-group">
+        <label for="sensitivity">Pose Sensitivity:</label>
+        <input
+          type="range"
+          id="sensitivity"
+          min="0.1"
+          max="2.0"
+          step="0.1"
+          value="1.0" />
+        <span id="sensitivity-value">1.0</span>
+      </div>
+
+      <div class="control-group">
+        <label for="show-skeleton">Show Skeleton:</label>
+        <input
+          type="checkbox"
+          id="show-skeleton"
+          checked />
+      </div>
+    </div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+
+    <script type="module">
+      // Import Three.js
+      import * as THREE from "three/webgpu";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+      import { GUI } from "three/addons/libs/lil-gui.module.min.js";
+      import Stats from "three/addons/libs/stats.module.js";
+      import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
+
+       // Load MediaPipe modules
+       await new Promise((resolve) => {
+         const script1 = document.createElement("script");
+         script1.src = "https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1635988164/pose.js";
+         script1.onload = () => {
+           const script2 = document.createElement("script");
+           script2.src = "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675465744/camera_utils.js";
+           script2.onload = resolve;
+           document.head.appendChild(script2);
+         };
+         document.head.appendChild(script1);
+       });
+
+      const Pose = window.Pose;
+      const Camera = window.Camera;
+
+      class PoseTo3DAvatar {
+        constructor() {
+          this.pose = null;
+          this.camera = null;
+          this.isRunning = false;
+          this.currentLandmarks = null;
+          this.lastLandmarks = null;
+          this.poseSmoothing = 0.5;
+          this.poseSensitivity = 1.0;
+          this.showSkeleton = true;
+
+          // 3D Scene properties
+          this.scene = null;
+          this.camera3D = null;
+          this.renderer = null;
+          this.avatar = null;
+          this.avatarMixer = null;
+          this.avatarSkeleton = null;
+          this.avatarHelper = null;
+
+          // Pose mapping
+          this.poseMapping = this.createPoseMapping();
+
+          // Animation properties
+          this.frameCount = 0;
+          this.lastTime = 0;
+
+          this.init();
+        }
+
+        async init() {
+          // Initialize MediaPipe
+          await this.initMediaPipe();
+
+          // Initialize Three.js
+          await this.initThreeJS();
+
+          // Setup event listeners
+          this.setupEventListeners();
+
+          // Start animation loop
+          this.animate();
+
+          document.getElementById("status-text").textContent = "Ready to start";
+        }
+
+        async initMediaPipe() {
+          try {
+            // Get video element reference
+            this.video = document.getElementById("video");
+            if (!this.video) {
+              throw new Error("Video element not found");
+            }
+
+            this.pose = new Pose({
+              locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1635988164/${file}`;
+              },
+            });
+
+            this.pose.setOptions({
+              modelComplexity: 1,
+              smoothLandmarks: true,
+              enableSegmentation: false,
+              smoothSegmentation: false,
+              minDetectionConfidence: 0.5,
+              minTrackingConfidence: 0.5,
+            });
+
+            this.pose.onResults((results) => {
+              if (results.poseLandmarks) {
+                this.currentLandmarks = results.poseLandmarks;
+              }
+            });
+
+            // Don't start camera immediately, wait for user to click start
+            document.getElementById("status-text").textContent = "MediaPipe initialized - Click Start";
+          } catch (error) {
+            console.error("MediaPipe initialization failed:", error);
+            document.getElementById("status-text").textContent = "MediaPipe failed: " + error.message;
+          }
+        }
+
+        async initThreeJS() {
+          // Create scene
+          this.scene = new THREE.Scene();
+          this.scene.background = new THREE.Color(0x222222);
+
+          // Create camera
+          this.camera3D = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+          this.camera3D.position.set(0, 1, 3);
+
+          // Create renderer
+          this.renderer = new THREE.WebGLRenderer({ antialias: true });
+          this.renderer.setSize(window.innerWidth, window.innerHeight);
+          this.renderer.setPixelRatio(window.devicePixelRatio);
+          this.renderer.shadowMap.enabled = true;
+          this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+          document.body.appendChild(this.renderer.domElement);
+
+          // Create lights
+          const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+          this.scene.add(ambientLight);
+
+          const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+          directionalLight.position.set(5, 5, 5);
+          directionalLight.castShadow = true;
+          directionalLight.shadow.mapSize.width = 2048;
+          directionalLight.shadow.mapSize.height = 2048;
+          this.scene.add(directionalLight);
+
+          // Load avatar model
+          await this.loadAvatar();
+
+          // Create controls
+          this.controls = new OrbitControls(this.camera3D, this.renderer.domElement);
+          this.controls.enableDamping = true;
+          this.controls.dampingFactor = 0.05;
+
+          // Create stats
+          this.stats = new Stats();
+          document.body.appendChild(this.stats.dom);
+
+          // Create GUI
+          this.gui = new GUI();
+          this.setupGUI();
+
+          document.getElementById("status-text").textContent = "Three.js initialized";
+        }
+
+        async loadAvatar() {
+          // For now, create a simple humanoid figure
+          // In a real implementation, you would load a GLTF model
+          this.createSimpleAvatar();
+        }
+
+        createSimpleAvatar() {
+          // Create a simple humanoid figure for demonstration
+          const avatarGroup = new THREE.Group();
+
+          // Body
+          const bodyGeometry = new THREE.CylinderGeometry(0.3, 0.4, 1.2, 8);
+          const bodyMaterial = new THREE.MeshPhongMaterial({ color: 0x8b4513 });
+          const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+          body.position.y = 0.6;
+          body.castShadow = true;
+          avatarGroup.add(body);
+
+          // Head
+          const headGeometry = new THREE.SphereGeometry(0.2, 16, 16);
+          const headMaterial = new THREE.MeshPhongMaterial({ color: 0xffdbb5 });
+          const head = new THREE.Mesh(headGeometry, headMaterial);
+          head.position.y = 1.4;
+          head.castShadow = true;
+          avatarGroup.add(head);
+
+          // Arms
+          const armGeometry = new THREE.CylinderGeometry(0.05, 0.08, 0.8, 8);
+          const armMaterial = new THREE.MeshPhongMaterial({ color: 0xffdbb5 });
+
+          const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+          leftArm.position.set(-0.5, 1.0, 0);
+          leftArm.castShadow = true;
+          avatarGroup.add(leftArm);
+
+          const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+          rightArm.position.set(0.5, 1.0, 0);
+          rightArm.castShadow = true;
+          avatarGroup.add(rightArm);
+
+          // Legs
+          const legGeometry = new THREE.CylinderGeometry(0.08, 0.1, 0.8, 8);
+          const legMaterial = new THREE.MeshPhongMaterial({ color: 0x000080 });
+
+          const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+          leftLeg.position.set(-0.2, -0.2, 0);
+          leftLeg.castShadow = true;
+          avatarGroup.add(leftLeg);
+
+          const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+          rightLeg.position.set(0.2, -0.2, 0);
+          rightLeg.castShadow = true;
+          avatarGroup.add(rightLeg);
+
+          this.avatar = avatarGroup;
+          this.scene.add(this.avatar);
+
+          // Create a simple skeleton for pose mapping
+          this.createSimpleSkeleton();
+        }
+
+        createSimpleSkeleton() {
+          // Create a simple skeleton structure for pose mapping
+          this.avatarSkeleton = {
+            // Head
+            head: this.avatar.children[1], // head mesh
+
+            // Body
+            spine: this.avatar.children[0], // body mesh
+
+            // Arms
+            leftShoulder: this.avatar.children[2], // left arm
+            rightShoulder: this.avatar.children[3], // right arm
+
+            // Legs
+            leftHip: this.avatar.children[4], // left leg
+            rightHip: this.avatar.children[5], // right leg
+          };
+        }
+
+        createPoseMapping() {
+          // Map MediaPipe pose landmarks to 3D avatar bones
+          return {
+            // MediaPipe landmark indices to avatar bones
+            0: "head", // nose
+            11: "leftShoulder", // left shoulder
+            12: "rightShoulder", // right shoulder
+            13: "leftElbow", // left elbow
+            14: "rightElbow", // right elbow
+            15: "leftWrist", // left wrist
+            16: "rightWrist", // right wrist
+            23: "leftHip", // left hip
+            24: "rightHip", // right hip
+            25: "leftKnee", // left knee
+            26: "rightKnee", // right knee
+            27: "leftAnkle", // left ankle
+            28: "rightAnkle", // right ankle
+          };
+        }
+
+        updateAvatarPose() {
+          if (!this.currentLandmarks || !this.avatar) return;
+
+          // Apply pose smoothing
+          if (this.lastLandmarks && this.poseSmoothing < 1.0) {
+            for (let i = 0; i < this.currentLandmarks.length; i++) {
+              const current = this.currentLandmarks[i];
+              const last = this.lastLandmarks[i];
+
+              current.x = last.x + (current.x - last.x) * this.poseSmoothing;
+              current.y = last.y + (current.y - last.y) * this.poseSmoothing;
+              current.z = last.z + (current.z - last.z) * this.poseSmoothing;
+            }
+          }
+
+          // Update avatar based on pose landmarks
+          this.updateAvatarFromLandmarks(this.currentLandmarks);
+
+          this.lastLandmarks = this.currentLandmarks.map((l) => ({ ...l }));
+        }
+
+        updateAvatarFromLandmarks(landmarks) {
+          if (!landmarks || landmarks.length < 33) return;
+
+          // Get key landmarks
+          const nose = landmarks[0];
+          const leftShoulder = landmarks[11];
+          const rightShoulder = landmarks[12];
+          const leftElbow = landmarks[13];
+          const rightElbow = landmarks[14];
+          const leftWrist = landmarks[15];
+          const rightWrist = landmarks[16];
+          const leftHip = landmarks[23];
+          const rightHip = landmarks[24];
+          const leftKnee = landmarks[25];
+          const rightKnee = landmarks[26];
+          const leftAnkle = landmarks[27];
+          const rightAnkle = landmarks[28];
+
+          // Calculate rotations based on pose
+          const sensitivity = this.poseSensitivity;
+
+          // Head rotation (based on nose position)
+          if (this.avatarSkeleton.head) {
+            const headRotation = this.calculateHeadRotation(nose, leftShoulder, rightShoulder);
+            this.avatarSkeleton.head.rotation.set(headRotation.x * sensitivity, headRotation.y * sensitivity, headRotation.z * sensitivity);
+          }
+
+          // Arm rotations
+          if (this.avatarSkeleton.leftShoulder) {
+            const leftArmRotation = this.calculateArmRotation(leftShoulder, leftElbow, leftWrist);
+            this.avatarSkeleton.leftShoulder.rotation.set(
+              leftArmRotation.x * sensitivity,
+              leftArmRotation.y * sensitivity,
+              leftArmRotation.z * sensitivity
+            );
+          }
+
+          if (this.avatarSkeleton.rightShoulder) {
+            const rightArmRotation = this.calculateArmRotation(rightShoulder, rightElbow, rightWrist);
+            this.avatarSkeleton.rightShoulder.rotation.set(
+              rightArmRotation.x * sensitivity,
+              rightArmRotation.y * sensitivity,
+              rightArmRotation.z * sensitivity
+            );
+          }
+
+          // Leg rotations
+          if (this.avatarSkeleton.leftHip) {
+            const leftLegRotation = this.calculateLegRotation(leftHip, leftKnee, leftAnkle);
+            this.avatarSkeleton.leftHip.rotation.set(
+              leftLegRotation.x * sensitivity,
+              leftLegRotation.y * sensitivity,
+              leftLegRotation.z * sensitivity
+            );
+          }
+
+          if (this.avatarSkeleton.rightHip) {
+            const rightLegRotation = this.calculateLegRotation(rightHip, rightKnee, rightAnkle);
+            this.avatarSkeleton.rightHip.rotation.set(
+              rightLegRotation.x * sensitivity,
+              rightLegRotation.y * sensitivity,
+              rightLegRotation.z * sensitivity
+            );
+          }
+        }
+
+        calculateHeadRotation(nose, leftShoulder, rightShoulder) {
+          // Simple head rotation based on nose position relative to shoulders
+          const shoulderCenter = {
+            x: (leftShoulder.x + rightShoulder.x) / 2,
+            y: (leftShoulder.y + rightShoulder.y) / 2,
+            z: (leftShoulder.z + rightShoulder.z) / 2,
+          };
+
+          const headOffset = {
+            x: nose.x - shoulderCenter.x,
+            y: nose.y - shoulderCenter.y,
+            z: nose.z - shoulderCenter.z,
+          };
+
+          return {
+            x: headOffset.y * 0.5,
+            y: headOffset.x * 0.5,
+            z: headOffset.z * 0.5,
+          };
+        }
+
+        calculateArmRotation(shoulder, elbow, wrist) {
+          // Calculate arm rotation based on elbow and wrist positions
+          const upperArm = {
+            x: elbow.x - shoulder.x,
+            y: elbow.y - shoulder.y,
+            z: elbow.z - shoulder.z,
+          };
+
+          const lowerArm = {
+            x: wrist.x - elbow.x,
+            y: wrist.y - elbow.y,
+            z: wrist.z - elbow.z,
+          };
+
+          // Calculate rotation angles
+          const rotationX = Math.atan2(upperArm.y, Math.sqrt(upperArm.x * upperArm.x + upperArm.z * upperArm.z));
+          const rotationY = Math.atan2(upperArm.x, upperArm.z);
+          const rotationZ = Math.atan2(lowerArm.x, lowerArm.y);
+
+          return {
+            x: rotationX,
+            y: rotationY,
+            z: rotationZ,
+          };
+        }
+
+        calculateLegRotation(hip, knee, ankle) {
+          // Calculate leg rotation based on knee and ankle positions
+          const upperLeg = {
+            x: knee.x - hip.x,
+            y: knee.y - hip.y,
+            z: knee.z - hip.z,
+          };
+
+          const lowerLeg = {
+            x: ankle.x - knee.x,
+            y: ankle.y - knee.y,
+            z: ankle.z - knee.z,
+          };
+
+          // Calculate rotation angles
+          const rotationX = Math.atan2(upperLeg.y, Math.sqrt(upperLeg.x * upperLeg.x + upperLeg.z * upperLeg.z));
+          const rotationY = Math.atan2(upperLeg.x, upperLeg.z);
+          const rotationZ = Math.atan2(lowerLeg.x, lowerLeg.y);
+
+          return {
+            x: rotationX,
+            y: rotationY,
+            z: rotationZ,
+          };
+        }
+
+        setupGUI() {
+          const gui = this.gui;
+
+          const poseFolder = gui.addFolder("Pose Detection");
+          poseFolder.add(this, "poseSmoothing", 0.1, 1.0).name("Smoothing");
+          poseFolder.add(this, "poseSensitivity", 0.1, 2.0).name("Sensitivity");
+          poseFolder.add(this, "showSkeleton").name("Show Skeleton");
+
+          const cameraFolder = gui.addFolder("Camera");
+          cameraFolder.add(this.camera3D.position, "x", -10, 10);
+          cameraFolder.add(this.camera3D.position, "y", -10, 10);
+          cameraFolder.add(this.camera3D.position, "z", -10, 10);
+        }
+
+        setupEventListeners() {
+          document.getElementById("start-btn").addEventListener("click", () => this.start());
+          document.getElementById("stop-btn").addEventListener("click", () => this.stop());
+
+          document.getElementById("smoothing").addEventListener("input", (e) => {
+            this.poseSmoothing = parseFloat(e.target.value);
+            document.getElementById("smoothing-value").textContent = e.target.value;
+          });
+
+          document.getElementById("sensitivity").addEventListener("input", (e) => {
+            this.poseSensitivity = parseFloat(e.target.value);
+            document.getElementById("sensitivity-value").textContent = e.target.value;
+          });
+
+          document.getElementById("show-skeleton").addEventListener("change", (e) => {
+            this.showSkeleton = e.target.checked;
+          });
+
+          window.addEventListener("resize", () => {
+            this.camera3D.aspect = window.innerWidth / window.innerHeight;
+            this.camera3D.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+          });
+        }
+
+        async start() {
+          try {
+            if (!this.camera) {
+              this.camera = new Camera(this.video, {
+                onFrame: async () => {
+                  if (this.isRunning && this.pose) {
+                    try {
+                      await this.pose.send({ image: this.video });
+                    } catch (error) {
+                      console.error("Error sending frame to pose:", error);
+                    }
+                  }
+                },
+                width: 640,
+                height: 480,
+              });
+
+              await this.camera.start();
+            }
+
+            this.isRunning = true;
+            document.getElementById("start-btn").disabled = true;
+            document.getElementById("stop-btn").disabled = false;
+            document.getElementById("status-text").textContent = "Detecting pose...";
+          } catch (error) {
+            console.error("Error starting camera:", error);
+            document.getElementById("status-text").textContent = "Camera error: " + error.message;
+          }
+        }
+
+        stop() {
+          this.isRunning = false;
+
+          if (this.camera) {
+            this.camera.stop();
+            this.camera = null;
+          }
+
+          document.getElementById("start-btn").disabled = false;
+          document.getElementById("stop-btn").disabled = true;
+          document.getElementById("status-text").textContent = "Stopped";
+        }
+
+        animate() {
+          requestAnimationFrame(() => this.animate());
+
+          // Update avatar pose
+          this.updateAvatarPose();
+
+          // Update controls
+          this.controls.update();
+
+          // Update stats
+          this.stats.update();
+
+          // Calculate FPS
+          this.frameCount++;
+          const currentTime = performance.now();
+          if (currentTime - this.lastTime >= 1000) {
+            const fps = Math.round((this.frameCount * 1000) / (currentTime - this.lastTime));
+            document.getElementById("fps").textContent = fps;
+            this.frameCount = 0;
+            this.lastTime = currentTime;
+          }
+
+          // Update pose confidence
+          if (this.currentLandmarks) {
+            const avgConfidence =
+              this.currentLandmarks.reduce((sum, landmark) => sum + landmark.visibility, 0) / this.currentLandmarks.length;
+            document.getElementById("pose-confidence").textContent = Math.round(avgConfidence * 100) + "%";
+          }
+
+          // Render
+          this.renderer.render(this.scene, this.camera3D);
+        }
+      }
+
+      // Initialize the application
+      const app = new PoseTo3DAvatar();
+    </script>
+  </body>
+</html>
