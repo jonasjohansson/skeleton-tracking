@@ -715,9 +715,19 @@
             const videoY = nose.y * videoHeight;
 
             // Convert to 3D coordinates (center origin, scale appropriately)
-            const headX = (videoX - videoWidth / 2) / 100; // Center and scale
-            const headY = -(videoY - videoHeight / 2) / 100; // Flip Y and center
-            const headZ = 0; // Keep on the same Z plane
+            const rawHeadX = (videoX - videoWidth / 2) / 100; // Center and scale
+            const rawHeadY = -(videoY - videoHeight / 2) / 100; // Flip Y and center
+            const rawHeadZ = 0; // Keep on the same Z plane
+
+            // Apply smoothing to position
+            const headX = this.smoothedPosition.x + (rawHeadX - this.smoothedPosition.x) * this.positionSmoothing;
+            const headY = this.smoothedPosition.y + (rawHeadY - this.smoothedPosition.y) * this.positionSmoothing;
+            const headZ = this.smoothedPosition.z + (rawHeadZ - this.smoothedPosition.z) * this.positionSmoothing;
+
+            // Update smoothed position
+            this.smoothedPosition.x = headX;
+            this.smoothedPosition.y = headY;
+            this.smoothedPosition.z = headZ;
 
             // Calculate body orientation and distance for positioning
             let behindOffsetX = 0;
