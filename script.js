@@ -13,15 +13,11 @@ class MultiPersonPoseTracker {
     this.video = document.getElementById("video");
     this.canvas = document.getElementById("canvas");
     this.ctx = this.canvas.getContext("2d");
-    this.bodyMaskCanvas = document.getElementById("body-mask-canvas");
-    this.bodyMaskCtx = this.bodyMaskCanvas.getContext("2d");
     this.threeCanvas = document.getElementById("three-canvas");
 
     // Set canvas size to fullscreen
     this.canvas.width = window.innerWidth;
     this.canvas.height = window.innerHeight;
-    this.bodyMaskCanvas.width = window.innerWidth;
-    this.bodyMaskCanvas.height = window.innerHeight;
 
     // Ensure video element is ready
     if (!this.video) {
@@ -50,9 +46,9 @@ class MultiPersonPoseTracker {
 
     // Initialize control values first
     this.behindDistance = 2.5;
-    this.heightOffset = 1.0; // Lower default height
+    this.heightOffset = 1.7; // Higher default height
     this.minScale = 0.1; // Much smaller minimum scale
-    this.maxScale = 1.4;
+    this.maxScale = 3.8;
     this.isTracking = false;
 
     // Smoothing and quality settings
@@ -70,7 +66,7 @@ class MultiPersonPoseTracker {
     this.minTrackingConfidence = 0.5;
     this.minPosePresence = 0.5;
     this.smoothLandmarks = true;
-    this.enableSegmentation = true; // Enable segmentation for body mask
+    this.enableSegmentation = false; // Enable segmentation for body mask
     this.selfieMode = false;
 
     // Camera settings
@@ -83,11 +79,131 @@ class MultiPersonPoseTracker {
     this.frameCount = 0;
     this.lastFpsTime = 0;
 
-    // Segmentation and body mask
-    this.segmentationMask = null;
-    this.bodyMaskCanvas = null;
-    this.bodyMaskCtx = null;
-    this.maskEnabled = true;
+    // Segmentation disabled
+    this.maskEnabled = false;
+    this.showSkeletonDebug = true;
+
+    // Red light controls
+    this.redLightIntensity = 20.0;
+    this.redLight2Intensity = 15.0;
+    this.redLight3Intensity = 10.0;
+
+    // LUT (Look-Up Table) controls
+    this.lutEnabled = false;
+    this.lutIntensity = 1.0;
+    this.lutType = "vintage";
+    this.lutCanvas = null;
+    this.lutCtx = null;
+    this.videoTexture = null;
+    this.videoMaterial = null;
+    this.videoMesh = null;
+  }
+
+  initLUT() {
+    // Create LUT canvas for color grading
+    this.lutCanvas = document.createElement("canvas");
+    this.lutCanvas.width = this.canvas.width;
+    this.lutCanvas.height = this.canvas.height;
+    this.lutCtx = this.lutCanvas.getContext("2d");
+
+    // Create Three.js video texture
+    this.videoTexture = new THREE.VideoTexture(this.video);
+    this.videoTexture.minFilter = THREE.LinearFilter;
+    this.videoTexture.magFilter = THREE.LinearFilter;
+    this.videoTexture.format = THREE.RGBAFormat;
+
+    // Create material with video texture
+    this.videoMaterial = new THREE.MeshBasicMaterial({
+      map: this.videoTexture,
+      transparent: true,
+      opacity: 1.0,
+    });
+
+    // Create plane geometry for video (will be resized to match video aspect ratio)
+    const videoGeometry = new THREE.PlaneGeometry(2, 2);
+    this.videoMesh = new THREE.Mesh(videoGeometry, this.videoMaterial);
+    this.videoMesh.position.z = -1; // Behind everything else
+    this.videoMesh.visible = false; // Start hidden
+    this.scene.add(this.videoMesh);
+
+    // Update video mesh size to match video aspect ratio
+    this.updateVideoMeshSize();
+
+    console.log("LUT initialized with Three.js video texture");
+  }
+
+  applyLUT() {
+    if (!this.lutEnabled || !this.video) return;
+
+    // Apply CSS filters directly to video element
+    let filterString = "";
+
+    switch (this.lutType) {
+      case "vintage":
+        filterString = `sepia(${this.lutIntensity * 0.8}) saturate(${1 + this.lutIntensity * 0.5}) hue-rotate(${
+          this.lutIntensity * 20
+        }deg) contrast(${1 + this.lutIntensity * 0.2})`;
+        break;
+      case "dramatic":
+        filterString = `contrast(${1 + this.lutIntensity * 0.5}) brightness(${1 + this.lutIntensity * 0.2}) saturate(${
+          1 + this.lutIntensity * 0.3
+        })`;
+        break;
+      case "cool":
+        filterString = `hue-rotate(${this.lutIntensity * -30}deg) saturate(${1 + this.lutIntensity * 0.3}) brightness(${
+          1 + this.lutIntensity * 0.1
+        })`;
+        break;
+      case "warm":
+        filterString = `hue-rotate(${this.lutIntensity * 20}deg) saturate(${1 + this.lutIntensity * 0.4}) brightness(${
+          1 + this.lutIntensity * 0.15
+        })`;
+        break;
+      case "monochrome":
+        filterString = `grayscale(${this.lutIntensity}) contrast(${1 + this.lutIntensity * 0.2})`;
+        break;
+      case "sepia":
+        filterString = `sepia(${this.lutIntensity}) contrast(${1 + this.lutIntensity * 0.1}) brightness(${1 + this.lutIntensity * 0.05})`;
+        break;
+    }
+
+    // Apply filter to video element
+    this.video.style.filter = filterString;
+  }
+
+  updateLUTUniforms() {
+    // Apply LUT immediately when settings change
+    if (this.lutEnabled) {
+      this.applyLUT();
+    } else {
+      // Clear filters when disabled
+      this.video.style.filter = "";
+    }
+  }
+
+  updateVideoMeshSize() {
+    if (!this.videoMesh || !this.video || this.video.videoWidth === 0 || this.video.videoHeight === 0) return;
+
+    // Calculate video aspect ratio
+    const videoAspect = this.video.videoWidth / this.video.videoHeight;
+    const canvasAspect = this.canvas.width / this.canvas.height;
+
+    let scaleX, scaleY;
+
+    if (canvasAspect > videoAspect) {
+      // Canvas is wider than video - letterbox
+      scaleY = 2; // Full height
+      scaleX = 2 * videoAspect; // Scale width to maintain aspect ratio
+    } else {
+      // Canvas is taller than video - pillarbox
+      scaleX = 2; // Full width
+      scaleY = 2 / videoAspect; // Scale height to maintain aspect ratio
+    }
+
+    // Update the video mesh scale
+    this.videoMesh.scale.set(scaleX, scaleY, 1);
+
+    console.log("Video mesh resized:", scaleX, "x", scaleY, "aspect:", videoAspect);
   }
 
   initGUI() {
@@ -110,8 +226,48 @@ class MultiPersonPoseTracker {
     balloonFolder.add(this, "behindDistance", 0.5, 5.0).name("Behind Distance");
     balloonFolder.add(this, "heightOffset", -2.0, 3.0).name("Height Offset");
     balloonFolder.add(this, "minScale", 0.1, 2.0).name("Min Scale");
-    balloonFolder.add(this, "maxScale", 0.5, 3.0).name("Max Scale");
+    balloonFolder.add(this, "maxScale", 0.5, 5.0).name("Max Scale");
+    balloonFolder
+      .add(this, "redLightIntensity", 0.0, 30.0)
+      .name("Red Light 1")
+      .onChange((value) => {
+        if (this.redLight) this.redLight.intensity = value;
+      });
+    balloonFolder
+      .add(this, "redLight2Intensity", 0.0, 30.0)
+      .name("Red Light 2")
+      .onChange((value) => {
+        if (this.redLight2) this.redLight2.intensity = value;
+      });
+    balloonFolder
+      .add(this, "redLight3Intensity", 0.0, 30.0)
+      .name("Red Light 3")
+      .onChange((value) => {
+        if (this.redLight3) this.redLight3.intensity = value;
+      });
     balloonFolder.open();
+
+    // LUT controls
+    const lutFolder = this.gui.addFolder("Color Grading (LUT)");
+    lutFolder
+      .add(this, "lutEnabled", false)
+      .name("Enable LUT")
+      .onChange(() => {
+        this.updateLUTUniforms();
+      });
+    lutFolder
+      .add(this, "lutType", ["vintage", "dramatic", "cool", "warm", "monochrome", "sepia"])
+      .name("LUT Type")
+      .onChange(() => {
+        this.updateLUTUniforms();
+      });
+    lutFolder
+      .add(this, "lutIntensity", 0.0, 2.0)
+      .name("LUT Intensity")
+      .onChange(() => {
+        this.updateLUTUniforms();
+      });
+    lutFolder.open();
 
     // Tracking controls
     const trackingFolder = this.gui.addFolder("Tracking");
@@ -125,6 +281,7 @@ class MultiPersonPoseTracker {
           this.stop();
         }
       });
+    trackingFolder.add(this, "showSkeletonDebug", true).name("Show Skeleton Debug");
     trackingFolder.open();
 
     // Smoothing controls
@@ -141,7 +298,6 @@ class MultiPersonPoseTracker {
     const trackingConfidenceControl = qualityFolder.add(this, "minTrackingConfidence", 0.1, 1.0).name("Tracking Confidence");
     const posePresenceControl = qualityFolder.add(this, "minPosePresence", 0.1, 1.0).name("Pose Presence");
     const smoothLandmarksControl = qualityFolder.add(this, "smoothLandmarks", true).name("Smooth Landmarks");
-    const enableSegmentationControl = qualityFolder.add(this, "enableSegmentation", true).name("Enable Segmentation");
     const selfieModeControl = qualityFolder.add(this, "selfieMode", false).name("Selfie Mode");
 
     // Add change listeners to update MediaPipe settings
@@ -149,15 +305,9 @@ class MultiPersonPoseTracker {
     trackingConfidenceControl.onChange(() => this.updateMediaPipeSettings());
     posePresenceControl.onChange(() => this.updateMediaPipeSettings());
     smoothLandmarksControl.onChange(() => this.updateMediaPipeSettings());
-    enableSegmentationControl.onChange(() => this.updateMediaPipeSettings());
     selfieModeControl.onChange(() => this.updateMediaPipeSettings());
 
     qualityFolder.open();
-
-    // Segmentation controls
-    const segmentationFolder = this.gui.addFolder("Body Mask");
-    segmentationFolder.add(this, "maskEnabled", true).name("Show Body Mask");
-    segmentationFolder.open();
 
     // Camera controls
     const cameraFolder = this.gui.addFolder("Camera");
@@ -199,16 +349,34 @@ class MultiPersonPoseTracker {
     directionalLight.castShadow = true;
     this.scene.add(directionalLight);
 
+    // Add red light specifically for balloon illumination
+    this.redLight = new THREE.PointLight(0xff4444, this.redLightIntensity, 30);
+    this.redLight.position.set(0, 3, 0);
+    this.redLight.castShadow = true;
+    this.scene.add(this.redLight);
+
+    // Add another red light from a different angle
+    this.redLight2 = new THREE.PointLight(0xff6666, this.redLight2Intensity, 25);
+    this.redLight2.position.set(-2, 2, 1);
+    this.redLight2.castShadow = true;
+    this.scene.add(this.redLight2);
+
+    // Add a third red light for better coverage
+    this.redLight3 = new THREE.PointLight(0xff8888, this.redLight3Intensity, 20);
+    this.redLight3.position.set(2, 1, -1);
+    this.redLight3.castShadow = true;
+    this.scene.add(this.redLight3);
+
     // Load balloon GLB model
     this.loadBalloonModel();
-
-    // Create body mask plane for occlusion
-    this.createBodyMaskPlane();
 
     // String is included in the GLB model, no need to generate one
 
     // Start animation loop
     this.animate3D();
+
+    // Initialize LUT
+    this.initLUT();
 
     // Initialize GUI after everything is set up (with delay to ensure dat.GUI is loaded)
     setTimeout(() => this.initGUI(), 100);
@@ -249,35 +417,16 @@ class MultiPersonPoseTracker {
 
   createFallbackBalloon() {
     const balloonGeometry = new THREE.SphereGeometry(1.2, 32, 32);
-    const balloonMaterial = new THREE.MeshLambertMaterial({ color: 0xff0000 });
+    const balloonMaterial = new THREE.MeshPhongMaterial({
+      color: 0xff0000,
+      shininess: 100,
+      specular: 0xffffff,
+    });
     this.balloonMesh = new THREE.Mesh(balloonGeometry, balloonMaterial);
     this.balloonMesh.castShadow = true;
     this.balloonMesh.receiveShadow = true;
     this.balloonMesh.visible = false; // Start hidden
     this.scene.add(this.balloonMesh);
-  }
-
-  createBodyMaskPlane() {
-    // Create a plane that will use the body mask as a texture
-    const planeGeometry = new THREE.PlaneGeometry(10, 10);
-
-    // Create a texture from the body mask canvas
-    this.bodyMaskTexture = new THREE.CanvasTexture(this.bodyMaskCanvas);
-    this.bodyMaskTexture.needsUpdate = true;
-
-    // Create material that uses the body mask
-    const planeMaterial = new THREE.MeshBasicMaterial({
-      map: this.bodyMaskTexture,
-      transparent: true,
-      opacity: 0.1, // Very subtle so it doesn't interfere with the view
-      side: THREE.DoubleSide,
-    });
-
-    // Create the plane mesh
-    this.bodyMaskPlane = new THREE.Mesh(planeGeometry, planeMaterial);
-    this.bodyMaskPlane.position.z = -0.1; // Slightly in front of the balloon
-    this.bodyMaskPlane.visible = false; // Start hidden
-    this.scene.add(this.bodyMaskPlane);
   }
 
   animate3D() {
@@ -294,9 +443,14 @@ class MultiPersonPoseTracker {
       this.canvas.height = window.innerHeight;
       this.bodyMaskCanvas.width = window.innerWidth;
       this.bodyMaskCanvas.height = window.innerHeight;
+      this.lutCanvas.width = window.innerWidth;
+      this.lutCanvas.height = window.innerHeight;
       this.renderer.setSize(window.innerWidth, window.innerHeight);
       this.camera3D.aspect = window.innerWidth / window.innerHeight;
       this.camera3D.updateProjectionMatrix();
+
+      // Update video mesh size on resize
+      this.updateVideoMeshSize();
     });
   }
 
@@ -323,7 +477,6 @@ class MultiPersonPoseTracker {
         minTrackingConfidence: this.minTrackingConfidence,
         minPosePresence: this.minPosePresence,
         smoothLandmarks: this.smoothLandmarks,
-        enableSegmentation: this.enableSegmentation,
         selfieMode: this.selfieMode,
       });
 
@@ -360,6 +513,14 @@ class MultiPersonPoseTracker {
         this.video.onloadeddata = resolve;
       });
 
+      // Verify video has valid dimensions
+      if (this.video.videoWidth === 0 || this.video.videoHeight === 0) {
+        throw new Error("Video dimensions are invalid");
+      }
+
+      // Update video mesh size now that video is ready
+      this.updateVideoMeshSize();
+
       // Camera started
     } catch (error) {
       console.error("Error starting camera:", error);
@@ -371,6 +532,18 @@ class MultiPersonPoseTracker {
     if (this.isRunning) return;
 
     try {
+      // Ensure video is ready before starting detection
+      if (!this.video || this.video.videoWidth === 0 || this.video.videoHeight === 0) {
+        console.error("Video not ready, cannot start detection");
+        return;
+      }
+
+      // Ensure MediaPipe is initialized
+      if (!this.poseLandmarker) {
+        console.error("MediaPipe not initialized, cannot start detection");
+        return;
+      }
+
       this.isRunning = true;
       this.isTracking = true;
 
@@ -425,15 +598,20 @@ class MultiPersonPoseTracker {
 
   onPoseResults(results) {
     if (results.landmarks) {
-      // Process segmentation mask if available
-      if (results.segmentationMasks && results.segmentationMasks.length > 0) {
-        this.processSegmentationMask(results.segmentationMasks[0]);
-      }
-
       this.updatePeople(results);
 
-      // Draw skeletons
+      // Apply LUT to video element
+      if (this.lutEnabled) {
+        this.applyLUT();
+      } else {
+        // Remove all filters when LUT is disabled
+        this.video.style.filter = "";
+      }
+
+      // Clear canvas before drawing skeleton
       this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+      // Draw skeletons on top of LUT background
       this.ctx.strokeStyle = "#00ff00";
       this.ctx.fillStyle = "#ff0000";
       this.ctx.lineWidth = 2;
@@ -567,8 +745,8 @@ class MultiPersonPoseTracker {
   drawSkeleton(landmarks) {
     if (!landmarks) return;
 
-    // Clear canvas
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    // Skip drawing if skeleton debug is disabled
+    if (!this.showSkeletonDebug) return;
 
     // Calculate video display area within canvas
     const canvasAspect = this.canvas.width / this.canvas.height;
@@ -868,16 +1046,41 @@ class MultiPersonPoseTracker {
   detectPoses() {
     if (!this.isRunning || !this.poseLandmarker) return;
 
+    let errorCount = 0;
+    const maxErrors = 5;
+
     const detectFrame = async () => {
       if (!this.isRunning) return;
+
+      // Check if video has valid dimensions before processing
+      if (!this.video || this.video.videoWidth === 0 || this.video.videoHeight === 0) {
+        requestAnimationFrame(detectFrame);
+        return;
+      }
 
       try {
         // For VIDEO mode, we need to use detectForVideo with a timestamp
         const timestamp = performance.now();
         const results = this.poseLandmarker.detectForVideo(this.video, timestamp);
         this.onPoseResults(results);
+        errorCount = 0; // Reset error count on success
       } catch (error) {
-        console.error("Error detecting poses:", error);
+        errorCount++;
+
+        // Stop detection on persistent errors to prevent console spam
+        if (error.message.includes("ROI width and height must be > 0") || errorCount >= maxErrors) {
+          console.error("Too many errors, stopping detection");
+          this.stop();
+          return;
+        }
+
+        // Add delay before retrying
+        setTimeout(() => {
+          if (this.isRunning) {
+            requestAnimationFrame(detectFrame);
+          }
+        }, 100);
+        return;
       }
 
       requestAnimationFrame(detectFrame);
@@ -896,63 +1099,11 @@ class MultiPersonPoseTracker {
         minTrackingConfidence: this.minTrackingConfidence,
         minPosePresence: this.minPosePresence,
         smoothLandmarks: this.smoothLandmarks,
-        enableSegmentation: this.enableSegmentation,
         selfieMode: this.selfieMode,
       });
     } catch (error) {
       console.error("Error updating MediaPipe settings:", error);
     }
-  }
-
-  processSegmentationMask(segmentationMask) {
-    if (!this.maskEnabled || !segmentationMask) return;
-
-    // Clear the body mask canvas
-    this.bodyMaskCtx.clearRect(0, 0, this.bodyMaskCanvas.width, this.bodyMaskCanvas.height);
-
-    // Get the mask data
-    const maskData = segmentationMask.getAsFloat32Array();
-    const maskWidth = segmentationMask.width;
-    const maskHeight = segmentationMask.height;
-
-    // Create image data for the mask canvas
-    const imageData = this.bodyMaskCtx.createImageData(this.bodyMaskCanvas.width, this.bodyMaskCanvas.height);
-    const data = imageData.data;
-
-    // Scale factors to map mask to canvas
-    const scaleX = this.bodyMaskCanvas.width / maskWidth;
-    const scaleY = this.bodyMaskCanvas.height / maskHeight;
-
-    // Process each pixel in the mask
-    let bodyPixels = 0;
-    for (let y = 0; y < maskHeight; y++) {
-      for (let x = 0; x < maskWidth; x++) {
-        const maskIndex = y * maskWidth + x;
-        const maskValue = maskData[maskIndex];
-
-        // If this pixel is part of the body (segmentation value > threshold)
-        if (maskValue > 0.5) {
-          bodyPixels++;
-          // Map to canvas coordinates
-          const canvasX = Math.floor(x * scaleX);
-          const canvasY = Math.floor(y * scaleY);
-
-          // Ensure we're within canvas bounds
-          if (canvasX >= 0 && canvasX < this.bodyMaskCanvas.width && canvasY >= 0 && canvasY < this.bodyMaskCanvas.height) {
-            const canvasIndex = (canvasY * this.bodyMaskCanvas.width + canvasX) * 4;
-
-            // Set the pixel to white (body mask)
-            data[canvasIndex] = 255; // Red
-            data[canvasIndex + 1] = 255; // Green
-            data[canvasIndex + 2] = 255; // Blue
-            data[canvasIndex + 3] = 255; // Alpha (fully opaque)
-          }
-        }
-      }
-    }
-
-    // Draw the mask to the canvas
-    this.bodyMaskCtx.putImageData(imageData, 0, 0);
   }
 }
 

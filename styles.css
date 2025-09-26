@@ -28,6 +28,7 @@ body {
   height: 100%;
   object-fit: contain; /* Changed from cover to contain to maintain aspect ratio */
   z-index: 1;
+  xfilter: contrast(1) brightness(1) saturate(0);
 }
 
 #canvas {
@@ -40,15 +41,6 @@ body {
   pointer-events: none;
 }
 
-#body-mask-canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 3;
-  pointer-events: none;
-}
 
 #three-canvas {
   position: absolute;
