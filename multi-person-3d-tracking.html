@@ -1,0 +1,1256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Person 3D Tracking with Body Segmentation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: white;
+            overflow: hidden;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #video-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 320px;
+            height: 240px;
+            border: 3px solid #00ff88;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0, 255, 136, 0.3);
+            z-index: 1000;
+        }
+
+        #video {
+            width: 100%;
+            height: 100%;
+            background: #000;
+            object-fit: cover;
+        }
+
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1001;
+        }
+
+        #three-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 100;
+        }
+
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 12px;
+            border: 2px solid #00ff88;
+            backdrop-filter: blur(10px);
+            z-index: 1000;
+            min-width: 300px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #00ff88;
+        }
+
+        button {
+            background: linear-gradient(45deg, #00ff88, #00cc6a);
+            color: #000;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 255, 136, 0.3);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 255, 136, 0.5);
+        }
+
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            margin: 5px 0;
+        }
+
+        input[type="checkbox"] {
+            margin-right: 8px;
+        }
+
+        #status {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 20px;
+            border-radius: 12px;
+            border: 2px solid #00ff88;
+            text-align: center;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+        }
+
+        #stats {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #00ff88;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+        }
+
+        .person-info {
+            margin: 5px 0;
+            padding: 5px;
+            background: rgba(0, 255, 136, 0.1);
+            border-radius: 4px;
+            border-left: 3px solid #00ff88;
+        }
+
+        .segmentation-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 50;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="video-container">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="canvas"></canvas>
+            <div id="segmentation-overlay" class="segmentation-overlay"></div>
+        </div>
+
+        <canvas id="three-canvas"></canvas>
+
+        <div id="controls">
+            <h3 style="margin-top: 0; color: #00ff88;">Multi-Person 3D Tracking</h3>
+            
+            <div class="control-group">
+                <button id="start-btn">Start Detection</button>
+                <button id="stop-btn" disabled>Stop Detection</button>
+            </div>
+
+            <div class="control-group">
+                <label for="max-people">Max People:</label>
+                <input type="range" id="max-people" min="1" max="6" value="4">
+                <span id="max-people-value">4</span>
+            </div>
+
+            <div class="control-group">
+                <label for="detection-confidence">Detection Confidence:</label>
+                <input type="range" id="detection-confidence" min="0.1" max="1.0" step="0.1" value="0.5">
+                <span id="detection-confidence-value">0.5</span>
+            </div>
+
+            <div class="control-group">
+                <label for="tracking-confidence">Tracking Confidence:</label>
+                <input type="range" id="tracking-confidence" min="0.1" max="1.0" step="0.1" value="0.5">
+                <span id="tracking-confidence-value">0.5</span>
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="enable-segmentation" checked>
+                    Enable Body Segmentation
+                </label>
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="show-skeleton" checked>
+                    Show Skeleton Overlay
+                </label>
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="show-3d-objects" checked>
+                    Show 3D Objects Between People
+                </label>
+            </div>
+
+            <div class="control-group">
+                <label for="object-type">3D Object Type:</label>
+                <select id="object-type">
+                    <option value="sphere">Sphere</option>
+                    <option value="cube">Cube</option>
+                    <option value="pyramid">Pyramid</option>
+                    <option value="torus">Torus</option>
+                    <option value="icosahedron">Icosahedron</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="object-size">Object Size:</label>
+                <input type="range" id="object-size" min="0.1" max="2.0" step="0.1" value="0.5">
+                <span id="object-size-value">0.5</span>
+            </div>
+
+            <div class="control-group">
+                <label for="connection-type">Connection Type:</label>
+                <select id="connection-type">
+                    <option value="line">Line</option>
+                    <option value="beam">Energy Beam</option>
+                    <option value="particles">Particles</option>
+                    <option value="holographic">Holographic</option>
+                    <option value="energy-field">Energy Field</option>
+                    <option value="none">No Connection</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="status">
+            <div>Status: <span id="status-text">Initializing...</span></div>
+            <div>FPS: <span id="fps">0</span></div>
+            <div>People Detected: <span id="people-count">0</span></div>
+        </div>
+
+        <div id="stats">
+            <h4 style="margin-top: 0; color: #00ff88;">People Stats</h4>
+            <div id="people-stats"></div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "./build/three.module.js",
+                "three/addons/": "./examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from "three";
+        import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+        import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+        import Stats from "three/addons/libs/stats.module.js";
+
+        // Load MediaPipe Tasks Vision
+        await new Promise((resolve) => {
+            const script1 = document.createElement("script");
+            script1.src = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/vision_bundle.mjs";
+            script1.onload = resolve;
+            document.head.appendChild(script1);
+        });
+
+        const { FilesetResolver, PoseLandmarker } = window;
+
+        class MultiPerson3DTracker {
+            constructor() {
+                this.video = document.getElementById("video");
+                this.canvas = document.getElementById("canvas");
+                this.ctx = this.canvas.getContext("2d");
+                this.threeCanvas = document.getElementById("three-canvas");
+
+                // Set canvas size
+                this.canvas.width = 320;
+                this.canvas.height = 240;
+
+                // MediaPipe properties
+                this.poseLandmarker = null;
+                this.isRunning = false;
+                this.people = new Map();
+                this.nextPersonId = 0;
+
+                // 3D Scene properties
+                this.scene = null;
+                this.camera3D = null;
+                this.renderer = null;
+                this.controls = null;
+                this.stats = null;
+
+                // 3D Objects between people
+                this.connectionObjects = [];
+                this.connectionLines = [];
+                this.particleSystems = [];
+
+                // Settings
+                this.maxPeople = 4;
+                this.detectionConfidence = 0.5;
+                this.trackingConfidence = 0.5;
+                this.enableSegmentation = true;
+                this.showSkeleton = true;
+                this.show3DObjects = true;
+                this.objectType = 'sphere';
+                this.objectSize = 0.5;
+                this.connectionType = 'line';
+
+                // Performance tracking
+                this.fps = 0;
+                this.frameCount = 0;
+                this.lastFpsTime = 0;
+
+                this.init();
+            }
+
+            async init() {
+                try {
+                    await this.initMediaPipe();
+                    await this.initThreeJS();
+                    this.setupEventListeners();
+                    this.animate();
+                    document.getElementById("status-text").textContent = "Ready to start";
+                } catch (error) {
+                    console.error("Initialization error:", error);
+                    document.getElementById("status-text").textContent = "Error: " + error.message;
+                }
+            }
+
+            async initMediaPipe() {
+                try {
+                    const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm");
+                    
+                    this.poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                        baseOptions: {
+                            modelAssetPath: "./pose/pose_landmarker_heavy.task",
+                            delegate: "GPU",
+                        },
+                        runningMode: "VIDEO",
+                        numPoses: this.maxPeople,
+                        minDetectionConfidence: this.detectionConfidence,
+                        minTrackingConfidence: this.trackingConfidence,
+                        minPosePresence: 0.5,
+                        smoothLandmarks: true,
+                        selfieMode: false,
+                    });
+
+                    console.log("MediaPipe initialized successfully");
+                } catch (error) {
+                    console.error("MediaPipe initialization failed:", error);
+                    // Fallback to lighter model if heavy model fails
+                    try {
+                        this.poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                            baseOptions: {
+                                modelAssetPath: "./pose/pose_landmarker_lite.task",
+                                delegate: "GPU",
+                            },
+                            runningMode: "VIDEO",
+                            numPoses: this.maxPeople,
+                            minDetectionConfidence: this.detectionConfidence,
+                            minTrackingConfidence: this.trackingConfidence,
+                            minPosePresence: 0.5,
+                            smoothLandmarks: true,
+                            selfieMode: false,
+                        });
+                        console.log("MediaPipe initialized with lite model");
+                    } catch (fallbackError) {
+                        console.error("Fallback initialization also failed:", fallbackError);
+                        throw error;
+                    }
+                }
+            }
+
+            async initThreeJS() {
+                // Create scene
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x0a0a0a);
+
+                // Create camera
+                this.camera3D = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.camera3D.position.set(0, 2, 5);
+
+                // Create renderer
+                this.renderer = new THREE.WebGLRenderer({
+                    canvas: this.threeCanvas,
+                    antialias: true,
+                    alpha: true
+                });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setPixelRatio(window.devicePixelRatio);
+                this.renderer.shadowMap.enabled = true;
+                this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+                // Create lights
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+                this.scene.add(ambientLight);
+
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                directionalLight.position.set(10, 10, 5);
+                directionalLight.castShadow = true;
+                directionalLight.shadow.mapSize.width = 2048;
+                directionalLight.shadow.mapSize.height = 2048;
+                this.scene.add(directionalLight);
+
+                // Add colored lights for dynamic lighting
+                this.redLight = new THREE.PointLight(0xff4444, 0.8, 30);
+                this.redLight.position.set(-5, 5, 0);
+                this.scene.add(this.redLight);
+
+                this.blueLight = new THREE.PointLight(0x4444ff, 0.8, 30);
+                this.blueLight.position.set(5, 5, 0);
+                this.scene.add(this.blueLight);
+
+                this.greenLight = new THREE.PointLight(0x44ff44, 0.8, 30);
+                this.greenLight.position.set(0, 5, -5);
+                this.scene.add(this.greenLight);
+
+                // Create controls
+                this.controls = new OrbitControls(this.camera3D, this.renderer.domElement);
+                this.controls.enableDamping = true;
+                this.controls.dampingFactor = 0.05;
+
+                // Create stats
+                this.stats = new Stats();
+                document.body.appendChild(this.stats.dom);
+
+                // Create ground plane
+                const groundGeometry = new THREE.PlaneGeometry(20, 20);
+                const groundMaterial = new THREE.MeshLambertMaterial({ 
+                    color: 0x222222,
+                    transparent: true,
+                    opacity: 0.8
+                });
+                const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+                ground.rotation.x = -Math.PI / 2;
+                ground.position.y = -2;
+                ground.receiveShadow = true;
+                this.scene.add(ground);
+
+                console.log("Three.js initialized successfully");
+            }
+
+            setupEventListeners() {
+                document.getElementById("start-btn").addEventListener("click", () => this.start());
+                document.getElementById("stop-btn").addEventListener("click", () => this.stop());
+
+                // Control event listeners
+                document.getElementById("max-people").addEventListener("input", (e) => {
+                    this.maxPeople = parseInt(e.target.value);
+                    document.getElementById("max-people-value").textContent = e.target.value;
+                    this.updateMediaPipeSettings();
+                });
+
+                document.getElementById("detection-confidence").addEventListener("input", (e) => {
+                    this.detectionConfidence = parseFloat(e.target.value);
+                    document.getElementById("detection-confidence-value").textContent = e.target.value;
+                    this.updateMediaPipeSettings();
+                });
+
+                document.getElementById("tracking-confidence").addEventListener("input", (e) => {
+                    this.trackingConfidence = parseFloat(e.target.value);
+                    document.getElementById("tracking-confidence-value").textContent = e.target.value;
+                    this.updateMediaPipeSettings();
+                });
+
+                document.getElementById("enable-segmentation").addEventListener("change", (e) => {
+                    this.enableSegmentation = e.target.checked;
+                });
+
+                document.getElementById("show-skeleton").addEventListener("change", (e) => {
+                    this.showSkeleton = e.target.checked;
+                });
+
+                document.getElementById("show-3d-objects").addEventListener("change", (e) => {
+                    this.show3DObjects = e.target.checked;
+                    this.update3DObjectsVisibility();
+                });
+
+                document.getElementById("object-type").addEventListener("change", (e) => {
+                    this.objectType = e.target.value;
+                    this.update3DObjects();
+                });
+
+                document.getElementById("object-size").addEventListener("input", (e) => {
+                    this.objectSize = parseFloat(e.target.value);
+                    document.getElementById("object-size-value").textContent = e.target.value;
+                    this.update3DObjects();
+                });
+
+                document.getElementById("connection-type").addEventListener("change", (e) => {
+                    this.connectionType = e.target.value;
+                    this.updateConnections();
+                });
+
+                window.addEventListener("resize", () => {
+                    this.camera3D.aspect = window.innerWidth / window.innerHeight;
+                    this.camera3D.updateProjectionMatrix();
+                    this.renderer.setSize(window.innerWidth, window.innerHeight);
+                });
+            }
+
+            async start() {
+                try {
+                    if (!this.video.srcObject) {
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            video: {
+                                width: { ideal: 1280 },
+                                height: { ideal: 720 },
+                                frameRate: { ideal: 30 }
+                            }
+                        });
+                        this.video.srcObject = stream;
+                    }
+
+                    this.isRunning = true;
+                    document.getElementById("start-btn").disabled = true;
+                    document.getElementById("stop-btn").disabled = false;
+                    document.getElementById("status-text").textContent = "Detecting poses...";
+                    
+                    this.startFPS();
+                    this.detectPoses();
+                } catch (error) {
+                    console.error("Error starting detection:", error);
+                    document.getElementById("status-text").textContent = "Error: " + error.message;
+                }
+            }
+
+            stop() {
+                this.isRunning = false;
+                document.getElementById("start-btn").disabled = false;
+                document.getElementById("stop-btn").disabled = true;
+                document.getElementById("status-text").textContent = "Stopped";
+
+                if (this.video.srcObject) {
+                    const tracks = this.video.srcObject.getTracks();
+                    tracks.forEach(track => track.stop());
+                    this.video.srcObject = null;
+                }
+
+                this.people.clear();
+                this.clear3DObjects();
+                this.clearConnections();
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            }
+
+            startFPS() {
+                const updateFPS = (currentTime) => {
+                    this.frameCount++;
+                    if (currentTime - this.lastFpsTime >= 1000) {
+                        this.fps = Math.round((this.frameCount * 1000) / (currentTime - this.lastFpsTime));
+                        document.getElementById("fps").textContent = this.fps;
+                        this.frameCount = 0;
+                        this.lastFpsTime = currentTime;
+                    }
+                    if (this.isRunning) {
+                        requestAnimationFrame(updateFPS);
+                    }
+                };
+                requestAnimationFrame(updateFPS);
+            }
+
+            detectPoses() {
+                if (!this.isRunning || !this.poseLandmarker) return;
+
+                let errorCount = 0;
+                const maxErrors = 5;
+
+                const detectFrame = async () => {
+                    if (!this.isRunning) return;
+
+                    try {
+                        // Check if video is ready
+                        if (!this.video || this.video.videoWidth === 0 || this.video.videoHeight === 0) {
+                            requestAnimationFrame(detectFrame);
+                            return;
+                        }
+
+                        const timestamp = performance.now();
+                        const results = this.poseLandmarker.detectForVideo(this.video, timestamp);
+                        this.onPoseResults(results);
+                        errorCount = 0; // Reset error count on success
+                    } catch (error) {
+                        errorCount++;
+                        console.error(`Error detecting poses (${errorCount}/${maxErrors}):`, error);
+                        
+                        if (errorCount >= maxErrors) {
+                            console.error("Too many errors, stopping detection");
+                            this.stop();
+                            return;
+                        }
+                        
+                        // Add delay before retrying
+                        setTimeout(() => {
+                            if (this.isRunning) {
+                                requestAnimationFrame(detectFrame);
+                            }
+                        }, 100);
+                        return;
+                    }
+
+                    requestAnimationFrame(detectFrame);
+                };
+
+                detectFrame();
+            }
+
+            onPoseResults(results) {
+                if (results.landmarks) {
+                    this.updatePeople(results);
+                    this.drawSkeletons();
+                    this.drawBodySegmentation(results);
+                    this.update3DObjects();
+                    this.updateConnections();
+                    this.updateStats();
+                }
+            }
+
+            updatePeople(results) {
+                const landmarks = results.landmarks;
+                if (!landmarks || landmarks.length === 0) {
+                    this.people.clear();
+                    return;
+                }
+
+                // Clear old people
+                this.people.clear();
+
+                // Process each detected pose
+                landmarks.forEach((landmarkSet, index) => {
+                    if (landmarkSet && landmarkSet.length > 0) {
+                        const confidence = this.calculateAverageConfidence(landmarkSet);
+                        
+                        if (confidence >= this.detectionConfidence) {
+                            const personId = this.nextPersonId++;
+                            this.people.set(personId, {
+                                id: personId,
+                                landmarks: landmarkSet,
+                                confidence: confidence,
+                                lastSeen: Date.now(),
+                                position: this.calculatePersonPosition(landmarkSet)
+                            });
+                        }
+                    }
+                });
+
+                document.getElementById("people-count").textContent = this.people.size;
+            }
+
+            calculateAverageConfidence(landmarks) {
+                if (!landmarks || landmarks.length === 0) return 0;
+
+                let totalConfidence = 0;
+                let validLandmarks = 0;
+
+                landmarks.forEach(landmark => {
+                    let confidence = 1.0;
+                    if (landmark.visibility !== undefined) {
+                        confidence = landmark.visibility;
+                    } else if (landmark.presence !== undefined) {
+                        confidence = landmark.presence;
+                    }
+                    totalConfidence += confidence;
+                    validLandmarks++;
+                });
+
+                return validLandmarks > 0 ? totalConfidence / validLandmarks : 0;
+            }
+
+            calculatePersonPosition(landmarks) {
+                // Calculate center position from key landmarks
+                const nose = landmarks[0];
+                const leftHip = landmarks[23];
+                const rightHip = landmarks[24];
+                
+                let centerX = nose.x;
+                let centerY = nose.y;
+                let centerZ = nose.z || 0;
+
+                if (leftHip && rightHip) {
+                    centerX = (nose.x + leftHip.x + rightHip.x) / 3;
+                    centerY = (nose.y + leftHip.y + rightHip.y) / 3;
+                    centerZ = (nose.z + leftHip.z + rightHip.z) / 3;
+                }
+
+                // Convert to 3D world coordinates
+                return {
+                    x: (centerX - 0.5) * 10,
+                    y: (0.5 - centerY) * 10,
+                    z: centerZ * 5
+                };
+            }
+
+            drawSkeletons() {
+                if (!this.showSkeleton) {
+                    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                    return;
+                }
+
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+                const connections = [
+                    [11, 12], [11, 13], [13, 15], [15, 17], [15, 19], [15, 21], [17, 19],
+                    [12, 14], [14, 16], [16, 18], [16, 20], [16, 22], [18, 20],
+                    [11, 23], [12, 24], [23, 24], [23, 25], [24, 26], [25, 27], [26, 28],
+                    [27, 29], [28, 30], [29, 31], [30, 32], [31, 32]
+                ];
+
+                this.people.forEach((person, id) => {
+                    const landmarks = person.landmarks;
+                    const color = this.getPersonColor(id);
+
+                    // Draw connections
+                    this.ctx.strokeStyle = color;
+                    this.ctx.lineWidth = 2;
+                    this.ctx.beginPath();
+
+                    connections.forEach(([startIdx, endIdx]) => {
+                        const startPoint = landmarks[startIdx];
+                        const endPoint = landmarks[endIdx];
+
+                        if (startPoint && endPoint) {
+                            const startX = startPoint.x * this.canvas.width;
+                            const startY = startPoint.y * this.canvas.height;
+                            const endX = endPoint.x * this.canvas.width;
+                            const endY = endPoint.y * this.canvas.height;
+
+                            this.ctx.moveTo(startX, startY);
+                            this.ctx.lineTo(endX, endY);
+                        }
+                    });
+
+                    this.ctx.stroke();
+
+                    // Draw landmarks
+                    this.ctx.fillStyle = color;
+                    landmarks.forEach(landmark => {
+                        const x = landmark.x * this.canvas.width;
+                        const y = landmark.y * this.canvas.height;
+                        this.ctx.beginPath();
+                        this.ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                        this.ctx.fill();
+                    });
+                });
+            }
+
+            getPersonColor(id) {
+                const colors = ['#ff4444', '#44ff44', '#4444ff', '#ffff44', '#ff44ff', '#44ffff'];
+                return colors[id % colors.length];
+            }
+
+            drawBodySegmentation(results) {
+                if (!this.enableSegmentation || !results.segmentationMasks) return;
+
+                const segmentationOverlay = document.getElementById("segmentation-overlay");
+                segmentationOverlay.innerHTML = "";
+
+                // Create canvas for segmentation overlay
+                const segCanvas = document.createElement("canvas");
+                segCanvas.width = this.canvas.width;
+                segCanvas.height = this.canvas.height;
+                segCanvas.style.position = "absolute";
+                segCanvas.style.top = "0";
+                segCanvas.style.left = "0";
+                segCanvas.style.pointerEvents = "none";
+                segCanvas.style.opacity = "0.6";
+
+                const segCtx = segCanvas.getContext("2d");
+                segCtx.clearRect(0, 0, segCanvas.width, segCanvas.height);
+
+                // Draw segmentation masks for each person
+                results.segmentationMasks.forEach((mask, personIndex) => {
+                    if (mask && mask.getAsFloat32Array) {
+                        const maskData = mask.getAsFloat32Array();
+                        const imageData = segCtx.createImageData(segCanvas.width, segCanvas.height);
+                        
+                        for (let i = 0; i < maskData.length; i++) {
+                            const alpha = maskData[i] * 255;
+                            const color = this.getPersonColor(personIndex);
+                            const rgb = this.hexToRgb(color);
+                            
+                            const pixelIndex = i * 4;
+                            imageData.data[pixelIndex] = rgb.r;     // R
+                            imageData.data[pixelIndex + 1] = rgb.g; // G
+                            imageData.data[pixelIndex + 2] = rgb.b; // B
+                            imageData.data[pixelIndex + 3] = alpha; // A
+                        }
+                        
+                        segCtx.putImageData(imageData, 0, 0);
+                    }
+                });
+
+                segmentationOverlay.appendChild(segCanvas);
+            }
+
+            hexToRgb(hex) {
+                const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+                return result ? {
+                    r: parseInt(result[1], 16),
+                    g: parseInt(result[2], 16),
+                    b: parseInt(result[3], 16)
+                } : { r: 255, g: 255, b: 255 };
+            }
+
+            update3DObjects() {
+                if (!this.show3DObjects) {
+                    this.clear3DObjects();
+                    return;
+                }
+
+                // Performance optimization: only update if people count changed
+                if (this.connectionObjects.length !== this.people.size) {
+                    // Clear existing objects
+                    this.clear3DObjects();
+
+                    // Create 3D objects for each person
+                    this.people.forEach((person, id) => {
+                        const object = this.create3DObject(person.position, id);
+                        this.connectionObjects.push(object);
+                        this.scene.add(object);
+                    });
+                } else {
+                    // Just update positions of existing objects
+                    let objectIndex = 0;
+                    this.people.forEach((person, id) => {
+                        if (this.connectionObjects[objectIndex]) {
+                            this.connectionObjects[objectIndex].position.set(person.position.x, person.position.y, person.position.z);
+                        }
+                        objectIndex++;
+                    });
+                }
+            }
+
+            create3DObject(position, personId) {
+                let geometry;
+                
+                switch (this.objectType) {
+                    case 'sphere':
+                        geometry = new THREE.SphereGeometry(this.objectSize, 16, 16);
+                        break;
+                    case 'cube':
+                        geometry = new THREE.BoxGeometry(this.objectSize, this.objectSize, this.objectSize);
+                        break;
+                    case 'pyramid':
+                        geometry = new THREE.ConeGeometry(this.objectSize, this.objectSize * 1.5, 4);
+                        break;
+                    case 'torus':
+                        geometry = new THREE.TorusGeometry(this.objectSize * 0.7, this.objectSize * 0.3, 8, 16);
+                        break;
+                    case 'icosahedron':
+                        geometry = new THREE.IcosahedronGeometry(this.objectSize);
+                        break;
+                    default:
+                        geometry = new THREE.SphereGeometry(this.objectSize, 16, 16);
+                }
+
+                const material = new THREE.MeshPhongMaterial({
+                    color: this.getPersonColor(personId),
+                    shininess: 100,
+                    transparent: true,
+                    opacity: 0.8
+                });
+
+                const mesh = new THREE.Mesh(geometry, material);
+                mesh.position.set(position.x, position.y, position.z);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+
+                // Add pulsing animation
+                mesh.userData = { 
+                    originalScale: this.objectSize,
+                    pulseSpeed: 0.02 + Math.random() * 0.01,
+                    pulsePhase: Math.random() * Math.PI * 2
+                };
+
+                return mesh;
+            }
+
+            updateConnections() {
+                this.clearConnections();
+
+                if (this.connectionType === 'none' || this.people.size < 2) return;
+
+                const peopleArray = Array.from(this.people.values());
+                
+                switch (this.connectionType) {
+                    case 'energy-field':
+                        this.createEnergyField(peopleArray);
+                        break;
+                    default:
+                        // Pairwise connections
+                        for (let i = 0; i < peopleArray.length; i++) {
+                            for (let j = i + 1; j < peopleArray.length; j++) {
+                                const person1 = peopleArray[i];
+                                const person2 = peopleArray[j];
+                                
+                                switch (this.connectionType) {
+                                    case 'line':
+                                        this.createConnectionLine(person1.position, person2.position);
+                                        break;
+                                    case 'beam':
+                                        this.createEnergyBeam(person1.position, person2.position);
+                                        break;
+                                    case 'particles':
+                                        this.createParticleConnection(person1.position, person2.position);
+                                        break;
+                                    case 'holographic':
+                                        this.createHolographicConnection(person1.position, person2.position);
+                                        break;
+                                }
+                            }
+                        }
+                        break;
+                }
+            }
+
+            createConnectionLine(pos1, pos2) {
+                const geometry = new THREE.BufferGeometry().setFromPoints([
+                    new THREE.Vector3(pos1.x, pos1.y, pos1.z),
+                    new THREE.Vector3(pos2.x, pos2.y, pos2.z)
+                ]);
+
+                const material = new THREE.LineBasicMaterial({
+                    color: 0x00ff88,
+                    transparent: true,
+                    opacity: 0.8
+                });
+
+                const line = new THREE.Line(geometry, material);
+                this.connectionLines.push(line);
+                this.scene.add(line);
+            }
+
+            createEnergyBeam(pos1, pos2) {
+                const direction = new THREE.Vector3(pos2.x - pos1.x, pos2.y - pos1.y, pos2.z - pos1.z);
+                const length = direction.length();
+                direction.normalize();
+
+                const geometry = new THREE.CylinderGeometry(0.1, 0.1, length, 8);
+                const material = new THREE.MeshBasicMaterial({
+                    color: 0x00ff88,
+                    transparent: true,
+                    opacity: 0.6
+                });
+
+                const beam = new THREE.Mesh(geometry, material);
+                beam.position.set(
+                    (pos1.x + pos2.x) / 2,
+                    (pos1.y + pos2.y) / 2,
+                    (pos1.z + pos2.z) / 2
+                );
+                beam.lookAt(pos2.x, pos2.y, pos2.z);
+                beam.rotateX(Math.PI / 2);
+
+                this.connectionLines.push(beam);
+                this.scene.add(beam);
+            }
+
+            createParticleConnection(pos1, pos2) {
+                const particleCount = 50;
+                const geometry = new THREE.BufferGeometry();
+                const positions = new Float32Array(particleCount * 3);
+                const colors = new Float32Array(particleCount * 3);
+                const sizes = new Float32Array(particleCount);
+
+                for (let i = 0; i < particleCount; i++) {
+                    const t = i / (particleCount - 1);
+                    const noise = Math.sin(t * Math.PI * 4 + Date.now() * 0.001) * 0.2;
+                    
+                    positions[i * 3] = pos1.x + (pos2.x - pos1.x) * t + noise;
+                    positions[i * 3 + 1] = pos1.y + (pos2.y - pos1.y) * t + noise * 0.5;
+                    positions[i * 3 + 2] = pos1.z + (pos2.z - pos1.z) * t + noise * 0.3;
+
+                    // Create rainbow effect
+                    const hue = (t + Date.now() * 0.0005) % 1;
+                    const rgb = this.hslToRgb(hue, 1, 0.5);
+                    colors[i * 3] = rgb.r / 255;
+                    colors[i * 3 + 1] = rgb.g / 255;
+                    colors[i * 3 + 2] = rgb.b / 255;
+
+                    sizes[i] = 0.05 + Math.sin(t * Math.PI) * 0.05;
+                }
+
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+                const material = new THREE.PointsMaterial({
+                    size: 0.1,
+                    vertexColors: true,
+                    transparent: true,
+                    opacity: 0.9,
+                    blending: THREE.AdditiveBlending
+                });
+
+                const particles = new THREE.Points(geometry, material);
+                particles.userData = { 
+                    originalPositions: positions.slice(),
+                    animationSpeed: 0.02,
+                    startTime: Date.now()
+                };
+
+                this.particleSystems.push(particles);
+                this.scene.add(particles);
+            }
+
+            createEnergyField(people) {
+                if (people.length < 2) return;
+
+                // Create a dynamic energy field between all people
+                const fieldGeometry = new THREE.SphereGeometry(1, 16, 16);
+                const fieldMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x00ff88,
+                    transparent: true,
+                    opacity: 0.3,
+                    wireframe: true
+                });
+
+                const field = new THREE.Mesh(fieldGeometry, fieldMaterial);
+                
+                // Position at center of all people
+                const centerX = people.reduce((sum, p) => sum + p.position.x, 0) / people.length;
+                const centerY = people.reduce((sum, p) => sum + p.position.y, 0) / people.length;
+                const centerZ = people.reduce((sum, p) => sum + p.position.z, 0) / people.length;
+                
+                field.position.set(centerX, centerY, centerZ);
+                field.userData = {
+                    originalScale: 1,
+                    pulseSpeed: 0.01,
+                    pulsePhase: 0
+                };
+
+                this.connectionObjects.push(field);
+                this.scene.add(field);
+            }
+
+            createHolographicConnection(pos1, pos2) {
+                // Create a holographic beam effect
+                const direction = new THREE.Vector3(pos2.x - pos1.x, pos2.y - pos1.y, pos2.z - pos1.z);
+                const length = direction.length();
+                direction.normalize();
+
+                // Create multiple layers for holographic effect
+                for (let layer = 0; layer < 3; layer++) {
+                    const geometry = new THREE.CylinderGeometry(0.05 + layer * 0.02, 0.05 + layer * 0.02, length, 8);
+                    const material = new THREE.MeshBasicMaterial({
+                        color: new THREE.Color().setHSL(0.3 + layer * 0.1, 1, 0.5),
+                        transparent: true,
+                        opacity: 0.4 - layer * 0.1,
+                        blending: THREE.AdditiveBlending
+                    });
+
+                    const beam = new THREE.Mesh(geometry, material);
+                    beam.position.set(
+                        (pos1.x + pos2.x) / 2,
+                        (pos1.y + pos2.y) / 2,
+                        (pos1.z + pos2.z) / 2
+                    );
+                    beam.lookAt(pos2.x, pos2.y, pos2.z);
+                    beam.rotateX(Math.PI / 2);
+
+                    beam.userData = {
+                        layer: layer,
+                        animationSpeed: 0.02 + layer * 0.01,
+                        phase: Math.random() * Math.PI * 2
+                    };
+
+                    this.connectionLines.push(beam);
+                    this.scene.add(beam);
+                }
+            }
+
+            hslToRgb(h, s, l) {
+                let r, g, b;
+                if (s === 0) {
+                    r = g = b = l;
+                } else {
+                    const hue2rgb = (p, q, t) => {
+                        if (t < 0) t += 1;
+                        if (t > 1) t -= 1;
+                        if (t < 1/6) return p + (q - p) * 6 * t;
+                        if (t < 1/2) return q;
+                        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                        return p;
+                    };
+                    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                    const p = 2 * l - q;
+                    r = hue2rgb(p, q, h + 1/3);
+                    g = hue2rgb(p, q, h);
+                    b = hue2rgb(p, q, h - 1/3);
+                }
+                return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
+            }
+
+            clear3DObjects() {
+                this.connectionObjects.forEach(obj => {
+                    this.scene.remove(obj);
+                });
+                this.connectionObjects = [];
+            }
+
+            clearConnections() {
+                this.connectionLines.forEach(line => {
+                    this.scene.remove(line);
+                });
+                this.connectionLines = [];
+
+                this.particleSystems.forEach(particles => {
+                    this.scene.remove(particles);
+                });
+                this.particleSystems = [];
+            }
+
+            update3DObjectsVisibility() {
+                this.connectionObjects.forEach(obj => {
+                    obj.visible = this.show3DObjects;
+                });
+            }
+
+            updateStats() {
+                const statsDiv = document.getElementById("people-stats");
+                statsDiv.innerHTML = "";
+
+                this.people.forEach((person, id) => {
+                    const personDiv = document.createElement("div");
+                    personDiv.className = "person-info";
+                    personDiv.innerHTML = `
+                        <strong>Person ${id + 1}</strong><br>
+                        Confidence: ${Math.round(person.confidence * 100)}%<br>
+                        Position: (${person.position.x.toFixed(1)}, ${person.position.y.toFixed(1)}, ${person.position.z.toFixed(1)})
+                    `;
+                    statsDiv.appendChild(personDiv);
+                });
+            }
+
+            updateMediaPipeSettings() {
+                if (!this.poseLandmarker) return;
+
+                try {
+                    this.poseLandmarker.setOptions({
+                        numPoses: this.maxPeople,
+                        minDetectionConfidence: this.detectionConfidence,
+                        minTrackingConfidence: this.trackingConfidence,
+                    });
+                } catch (error) {
+                    console.error("Error updating MediaPipe settings:", error);
+                }
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+
+                // Update controls
+                this.controls.update();
+
+                // Update stats
+                this.stats.update();
+
+                // Animate 3D objects
+                this.connectionObjects.forEach(obj => {
+                    if (obj.userData) {
+                        obj.userData.pulsePhase += obj.userData.pulseSpeed;
+                        const scale = obj.userData.originalScale * (1 + Math.sin(obj.userData.pulsePhase) * 0.2);
+                        obj.scale.setScalar(scale);
+                    }
+                });
+
+                // Animate particle systems
+                this.particleSystems.forEach(particles => {
+                    if (particles.userData) {
+                        const positions = particles.geometry.attributes.position.array;
+                        const originalPositions = particles.userData.originalPositions;
+                        const time = Date.now() * particles.userData.animationSpeed;
+                        
+                        for (let i = 0; i < positions.length; i += 3) {
+                            const t = i / 3 / (positions.length / 3 - 1);
+                            const wave1 = Math.sin(time + t * Math.PI * 4) * 0.1;
+                            const wave2 = Math.sin(time * 0.5 + t * Math.PI * 8) * 0.05;
+                            
+                            positions[i] = originalPositions[i] + wave1;
+                            positions[i + 1] = originalPositions[i + 1] + wave2;
+                            positions[i + 2] = originalPositions[i + 2] + wave1 * 0.5;
+                        }
+                        
+                        particles.geometry.attributes.position.needsUpdate = true;
+                    }
+                });
+
+                // Animate connection lines
+                this.connectionLines.forEach(line => {
+                    if (line.userData) {
+                        const time = Date.now() * line.userData.animationSpeed;
+                        line.userData.phase += time * 0.001;
+                        
+                        if (line.userData.layer !== undefined) {
+                            // Holographic effect
+                            const opacity = 0.4 - line.userData.layer * 0.1 + Math.sin(line.userData.phase) * 0.2;
+                            line.material.opacity = Math.max(0.1, opacity);
+                            
+                            // Color shift
+                            const hue = (0.3 + line.userData.layer * 0.1 + line.userData.phase * 0.1) % 1;
+                            line.material.color.setHSL(hue, 1, 0.5);
+                        }
+                    }
+                });
+
+                // Animate energy fields
+                this.connectionObjects.forEach(obj => {
+                    if (obj.userData && obj.userData.pulseSpeed) {
+                        obj.userData.pulsePhase += obj.userData.pulseSpeed;
+                        const scale = obj.userData.originalScale * (1 + Math.sin(obj.userData.pulsePhase) * 0.3);
+                        obj.scale.setScalar(scale);
+                        
+                        // Rotate the field
+                        obj.rotation.y += 0.01;
+                        obj.rotation.x += 0.005;
+                    }
+                });
+
+                // Render
+                this.renderer.render(this.scene, this.camera3D);
+            }
+        }
+
+        // Initialize the application
+        let tracker;
+        document.addEventListener("DOMContentLoaded", async () => {
+            try {
+                tracker = new MultiPerson3DTracker();
+                console.log("Multi-Person 3D Tracker initialized");
+            } catch (error) {
+                console.error("Error initializing tracker:", error);
+            }
+        });
+    </script>
+</body>
+</html>
